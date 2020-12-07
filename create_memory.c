@@ -8,11 +8,12 @@
 
 int main()
 {
-    
-    smem_init(); 
 
-    printf ("memory segment is removed from the system. System is clean now.\n");
-    printf ("you can no longer run processes to allocate memory using the library\n"); 
+    int res = smem_init(32768);
+    printf("res is %d\n", res);
 
-    return (0); 
+    printf("memory segment is removed from the system. System is clean now.\n");
+    printf("you can no longer run processes to allocate memory using the library\n");
+
+    return (0);
 }
