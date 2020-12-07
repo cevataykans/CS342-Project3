@@ -19,6 +19,7 @@ char sharedMemoryName[] = "/sharedSegmentName";
 // Define your stuctures and variables.
 int shm_fd;
 int processCount = 0;
+int sharedMemorySize = -1;
 
 const int MAX_SEGMENT_SIZE = (1 << 20) * 4;
 const int MIN_SEGMENT_SIZE = (1 << 10) * 32;
@@ -34,6 +35,8 @@ signed char usedData[10] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 int smem_init(int segmentsize)
 {
+    printf("Pointer size is: %ld\n", sizeof(void *));
+
     printf("Max segment size => %d and min segment size => %d\n", MAX_SEGMENT_SIZE, MIN_SEGMENT_SIZE);
     // validate segment size
     if (segmentsize < MIN_SEGMENT_SIZE || segmentsize > MAX_SEGMENT_SIZE)
@@ -58,7 +61,7 @@ int smem_init(int segmentsize)
     shm_fd = shm_open(sharedMemoryName, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (shm_fd < 0)
     {
-        if (errno == EEXIST)
+        if (errno == EEXIST) // WE CAN ACTUALLY CALL THE smem_remove here? ask ibrahim hocas
         {
             printf("Shared memory already exists, calling unlink to reallocate memory!\n");
             shm_unlink(sharedMemoryName);
@@ -71,7 +74,7 @@ int smem_init(int segmentsize)
         }
     }
 
-    if (shm_fd > 0)
+    if (shm_fd >= 0)
     {
         printf("Shared memory opened, truncating...\n");
         int truncateRes = ftruncate(shm_fd, segmentsize);
@@ -80,7 +83,9 @@ int smem_init(int segmentsize)
             printf("Truncate failed...\n");
             return -1;
         }
+        sharedMemorySize = segmentsize;
     }
+    printf("Cur pid size is: %ld\n", sizeof(getpid()));
     return shm_fd >= 0 ? 0 : -1;
 }
 
@@ -92,6 +97,7 @@ int smem_remove()
     {
         usedData[i] = -1;
     }
+    sharedMemorySize = -1;
 
     return shm_unlink(sharedMemoryName) >= 0 ? 0 : -1;
 }
@@ -100,17 +106,33 @@ int smem_open()
 {
     //protect with semephore the whole function
 
+    if (sharedMemorySize < 0)
+    {
+        printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
+        return -1;
+    }
+
     // limit the usage of the library!
     if (processCount < MAX_PROCESS_COUNT)
     {
-        // allocate this slot to the requesting process
-        usedData[processCount] = 1;
-        processCount++;
+        // find the available spot!
+        for (int i = 0; i < MAX_PROCESS_COUNT; i++)
+        {
+            if (usedData[i] < 0)
+            {
+                // allocate this slot to the requesting process
+                usedData[i] = 1;
+                processCount++;
 
-        // map the memory
-
-        return 0;
+                // map the memory
+                processData[i].processID = getpid();
+                processData[i].ptr = mmap(0, sharedMemorySize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+                printf("Library successfuly mapped process to the shared memory\n");
+                return 0;
+            }
+        }
     }
+    printf("Library COULD NOT mapped process to the shared memory\n");
     return -1;
 }
 
@@ -118,18 +140,58 @@ void *smem_alloc(int size)
 {
     // protect with semephore the whole function
 
-    // can allocate a minumum of 8 bytes
-    if (size < 8)
+    // get the memory ptr of the process
+    pid_t requestingProcessID = getpid();
+    void *processMemoryPtr = NULL;
+    // check if process id is valid
+    for (int i = 0; i < MAX_PROCESS_COUNT; i++)
     {
-        size = 8;
+        if (processData[i].processID == requestingProcessID)
+        {
+            processMemoryPtr = processData[i].ptr;
+        }
+    }
+    if (processMemoryPtr == NULL) //check permission
+    {
+        printf("You do not have permission to allocate memory!\n");
+        return NULL;
     }
 
-    return (NULL);
+    // can allocate a multiple of 8 bytes
+    if (size % 8 != 0)
+    {
+        size = ((size / 8) + 1) * 8;
+    }
+
+    // find a suitable spot
+    void *requestedMemPtr = &processMemoryPtr + 12;
+    processMemoryPtr = &processMemoryPtr + 12 + size;
+
+    // return ptr if any space is available!
+
+    return requestedMemPtr;
 }
 
 void smem_free(void *p)
 {
     // protect with semephore the whole function
+
+    // get the memory ptr of the process
+    pid_t requestingProcessID = getpid();
+    void *processMemoryPtr = NULL;
+    // check if process id is valid
+    for (int i = 0; i < MAX_PROCESS_COUNT; i++)
+    {
+        if (processData[i].processID == requestingProcessID)
+        {
+            processMemoryPtr = processData[i].ptr;
+        }
+    }
+    if (processMemoryPtr == NULL) //check permission
+    {
+        printf("You do not have permission to allocate memory!\n");
+        return;
+    }
 
     // deallacote space pointed by the pointer p
 }
@@ -142,3 +204,5 @@ int smem_close()
 
     return (0);
 }
+
+/// Custom functions
