@@ -9,6 +9,8 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "smemlib.h"
+// TODO: remove all printfs
 
 // Define a name for your shared memory; you can give any name that start with a slash character; it will be like a filename.
 char sharedMemoryName[] = "/sharedSegmentName";
@@ -20,6 +22,14 @@ char sharedMemoryName[] = "/sharedSegmentName";
 int shm_fd;
 int processCount = 0;
 int sharedMemorySize = -1;
+int memoryUsed = -1; // indicates if the allocation is made for the first time, this will insert first header!
+
+void *(*allocationAlgo)(int, void *);
+
+const int ALLOCATION_LENGTH_OFFSET = 9;
+const int ALLOCATION_USED_OFFSET = 8;
+const int ALLOCATION_PID_OFFSET = 4;
+const int HEADER_SIZE = 13;
 
 const int MAX_SEGMENT_SIZE = (1 << 20) * 4;
 const int MIN_SEGMENT_SIZE = (1 << 10) * 32;
@@ -35,7 +45,13 @@ signed char usedData[10] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 int smem_init(int segmentsize)
 {
-    printf("Pointer size is: %ld\n", sizeof(void *));
+    signed char c = -1;
+    int a = 5;
+    printf("Pointer size for void* is: %ld\n", sizeof(void *));
+    printf("Pointer size for 5 is: %ld\n", sizeof(a));
+    pid_t b = getpid();
+    printf("Pointer size for pidt is: %ld\n", sizeof(b));
+    printf("Pointer size for signed char is: %ld\n", sizeof(c));
 
     printf("Max segment size => %d and min segment size => %d\n", MAX_SEGMENT_SIZE, MIN_SEGMENT_SIZE);
     // validate segment size
@@ -84,6 +100,7 @@ int smem_init(int segmentsize)
             return -1;
         }
         sharedMemorySize = segmentsize;
+        allocationAlgo = &smem_firstFit;
     }
     printf("Cur pid size is: %ld\n", sizeof(getpid()));
     return shm_fd >= 0 ? 0 : -1;
@@ -98,13 +115,14 @@ int smem_remove()
         usedData[i] = -1;
     }
     sharedMemorySize = -1;
+    memoryUsed = -1;
 
     return shm_unlink(sharedMemoryName) >= 0 ? 0 : -1;
 }
 
 int smem_open()
 {
-    //protect with semephore the whole function
+    //TODO protect with semephore the whole function
 
     if (sharedMemorySize < 0)
     {
@@ -120,25 +138,31 @@ int smem_open()
         {
             if (usedData[i] < 0)
             {
-                // allocate this slot to the requesting process
-                usedData[i] = 1;
-                processCount++;
-
                 // map the memory
                 processData[i].processID = getpid();
-                processData[i].ptr = mmap(0, sharedMemorySize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-                printf("Library successfuly mapped process to the shared memory\n");
-                return 0;
+                processData[i].ptr = mmap(NULL, sharedMemorySize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+                if (processData[i].ptr != MAP_FAILED)
+                {
+                    // allocate this slot to the requesting process
+                    usedData[i] = 1;
+                    processCount++;
+
+                    printf("Library successfuly mapped process to the shared memory\n");
+                    return 0;
+                }
+                printf("Library COULD NOT mapped process to the shared memory\n");
+                return -1;
             }
         }
     }
-    printf("Library COULD NOT mapped process to the shared memory\n");
+    printf("ERROR, MORE THAN 10 process!\n");
     return -1;
 }
 
 void *smem_alloc(int size)
 {
-    // protect with semephore the whole function
+    //TODO protect with semephore the whole function
 
     // get the memory ptr of the process
     pid_t requestingProcessID = getpid();
@@ -146,7 +170,7 @@ void *smem_alloc(int size)
     // check if process id is valid
     for (int i = 0; i < MAX_PROCESS_COUNT; i++)
     {
-        if (processData[i].processID == requestingProcessID)
+        if (usedData[i] > 0 && processData[i].processID == requestingProcessID)
         {
             processMemoryPtr = processData[i].ptr;
         }
@@ -163,18 +187,20 @@ void *smem_alloc(int size)
         size = ((size / 8) + 1) * 8;
     }
 
-    // find a suitable spot
-    void *requestedMemPtr = &processMemoryPtr + 12;
-    processMemoryPtr = &processMemoryPtr + 12 + size;
+    //If memory is not used before, initialize the first header.
+    if (memoryUsed < 0)
+    {
+        *((int *)processMemoryPtr) = -1;
+        memoryUsed = 1;
+    }
 
-    // return ptr if any space is available!
-
-    return requestedMemPtr;
+    //return smem_firstFit(size, processMemoryPtr);
+    return allocationAlgo(size, processMemoryPtr);
 }
 
 void smem_free(void *p)
 {
-    // protect with semephore the whole function
+    //TODO protect with semephore the whole function
 
     // get the memory ptr of the process
     pid_t requestingProcessID = getpid();
@@ -194,15 +220,140 @@ void smem_free(void *p)
     }
 
     // deallacote space pointed by the pointer p
+
+    // scenario 1 - at the end of the list
+    void *headPtr = p - HEADER_SIZE;
+    if (((headPtr - processMemoryPtr) + HEADER_SIZE + *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET))) == sharedMemorySize || *((int *)(headPtr + *((int *)(headPtr)))) < 0)
+    {
+        *((int *)(headPtr)) = -1;
+        return;
+    }
+
+    // scneraio 2 - at the beginning of the list
+    if (headPtr - processMemoryPtr == 0)
+    {
+        *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
+        void *nextHeaderPtr = headPtr + *((int *)(headPtr));
+        if (*((int *)(nextHeaderPtr)) > 0 && *((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET)) == -1) // next ptr is alos empty, merge them
+        {
+            *((int *)(headPtr)) = *((int *)(headPtr)) + *((int *)(nextHeaderPtr));
+        }
+        return;
+    }
+
+    // scenario 3 - in the middle
+
+    //      Scenario 3.1 both prior and next are empty
+
+    //      Scenario 3.2 only next is empty
+
+    //      Scenario 3.3 only prior is empty
 }
 
 int smem_close()
 {
-    // protect with semephores the whole function
+    //TODO protect with semephores the whole function
 
-    // deallocate memory of procecss from the shared segment!
+    if (sharedMemorySize < 0)
+    {
+        printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
+        return -1;
+    }
 
-    return (0);
+    // find the process
+    pid_t processIDToClose = getpid();
+    for (int i = 0; i < MAX_PROCESS_COUNT; i++)
+    {
+        if (usedData[i] > 0 && processData[i].processID == processIDToClose)
+        {
+            //TODO deallocate every memory used by the process
+
+            //TODO unmap the memory
+            int unmapRes = munmap(processData[i].ptr, sharedMemorySize);
+
+            //TODO check unmap result
+            if (unmapRes >= 0)
+            {
+                usedData[i] = -1;
+                processCount--;
+
+                printf("Library successfuly UNMAPPED process\n");
+                return 0;
+            }
+            printf("Library COULD NOT unmap\n");
+            return -1;
+        }
+    }
+    printf("Requesting process is not using the library, denided service!\n");
+    return -1;
 }
 
+//
+
+//
+
+//
+
 /// Custom functions
+
+void *smem_firstFit(int size, void *shmPtr)
+{
+    //find a suitable spot
+    void *foundAddress = NULL;
+    void *curMemPointer = shmPtr;
+    while (*((int *)curMemPointer) > 0)
+    {
+        // current in between hole can be allocated to the requesting process
+        if (*((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) < 0 &&
+            *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) >= size)
+        {
+            foundAddress = curMemPointer + HEADER_SIZE;
+            int remSizeInHole = *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) - size;
+
+            *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+            *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+            *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+
+            // There is enough space left for a small hole, handle connection
+            if (remSizeInHole > HEADER_SIZE)
+            {
+                // connect handle
+                void *newHoleAddress = foundAddress + size;
+                *((int *)(newHoleAddress)) = curMemPointer + *((int *)(curMemPointer)) - newHoleAddress;
+                *((int *)(curMemPointer)) = newHoleAddress - curMemPointer;
+
+                //set settings of remaining hole
+                *((char *)(newHoleAddress + ALLOCATION_USED_OFFSET)) = -1;
+                *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
+            }
+            return foundAddress;
+        }
+        curMemPointer += *((int *)(curMemPointer));
+    }
+
+    //a hole could not be found, allocate at the end of tail if there is memory
+    if (sharedMemorySize - (curMemPointer - shmPtr) > HEADER_SIZE + size)
+    {
+        // allocate memory
+        foundAddress = curMemPointer + HEADER_SIZE;
+        *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+        *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+        *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+
+        // create new end tail
+        void *tailHoleAddress = foundAddress + size;
+        *((int *)(tailHoleAddress)) = -1;
+        *((int *)(curMemPointer)) = tailHoleAddress - curMemPointer;
+    }
+    return foundAddress;
+}
+
+void *smem_bestFit(int size, void *shmPtr)
+{
+    return (NULL);
+}
+
+void *smem_worstFit(int size, void *shmPtr)
+{
+    return (NULL);
+}

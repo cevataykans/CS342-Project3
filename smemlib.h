@@ -1,6 +1,10 @@
 #ifndef SMEMLIB_H
 #define SMEMLIB_H
 
+void *smem_firstFit(int size, void *shmPtr);
+void *smem_bestFit(int size, void *shmPtr);
+void *smem_worstFit(int size, void *shmPtr);
+
 int smem_init(int segmentsize);
 int smem_remove();
 
