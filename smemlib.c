@@ -289,6 +289,22 @@ int smem_close()
         if (usedData[i] > 0 && processData[i].processID == processIDToClose)
         {
             //TODO deallocate every memory used by the process
+            void *curHead = processData[i].ptr;
+            void *prevHead = NULL;
+            while (*((int *)(curHead)) > 0)
+            {
+                if (*((pid_t *)(curHead + ALLOCATION_PID_OFFSET)) == processIDToClose)
+                {
+                    prevHead = curHead;
+                }
+                curHead += *((int *)(curHead));
+                if (prevHead != NULL)
+                {
+                    printf("Forced deallocating to prevent memory leak...\n");
+                    smem_free(prevHead + HEADER_SIZE);
+                    prevHead = NULL;
+                }
+            }
 
             //TODO unmap the memory
             int unmapRes = munmap(processData[i].ptr, sharedMemorySize);
