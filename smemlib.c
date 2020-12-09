@@ -26,10 +26,11 @@ int memoryUsed = -1; // indicates if the allocation is made for the first time, 
 
 void *(*allocationAlgo)(int, void *);
 
-const int ALLOCATION_LENGTH_OFFSET = 9;
-const int ALLOCATION_USED_OFFSET = 8;
-const int ALLOCATION_PID_OFFSET = 4;
-const int HEADER_SIZE = 13;
+const int ALLOCATION_LENGTH_OFFSET = 13;
+const int ALLOCATION_USED_OFFSET = 12;
+const int ALLOCATION_PID_OFFSET = 8;
+const int ALLOCATION_PREV_OFFSET = 4;
+const int HEADER_SIZE = 17;
 
 const int MAX_SEGMENT_SIZE = (1 << 20) * 4;
 const int MIN_SEGMENT_SIZE = (1 << 10) * 32;
@@ -191,6 +192,7 @@ void *smem_alloc(int size)
     if (memoryUsed < 0)
     {
         *((int *)processMemoryPtr) = -1;
+        *((int *)processMemoryPtr + ALLOCATION_PREV_OFFSET) = -1;
         memoryUsed = 1;
     }
 
@@ -219,10 +221,9 @@ void smem_free(void *p)
         return;
     }
 
-    // deallacote space pointed by the pointer p
-
     // scenario 1 - at the end of the list
     void *headPtr = p - HEADER_SIZE;
+
     if (((headPtr - processMemoryPtr) + HEADER_SIZE + *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET))) == sharedMemorySize || *((int *)(headPtr + *((int *)(headPtr)))) < 0)
     {
         *((int *)(headPtr)) = -1;
@@ -242,12 +243,33 @@ void smem_free(void *p)
     }
 
     // scenario 3 - in the middle
+    void *prevHeaderPtr = headPtr - *((int *)(headPtr + ALLOCATION_PREV_OFFSET));
+    void *nextHeaderPtr = headPtr + *((int *)(headPtr));
 
-    //      Scenario 3.1 both prior and next are empty
-
-    //      Scenario 3.2 only next is empty
-
-    //      Scenario 3.3 only prior is empty
+    char isPrevUsed = *((char *)(prevHeaderPtr + ALLOCATION_USED_OFFSET));
+    char isNextUsed = *((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET));
+    if (isPrevUsed < 0 && isNextUsed < 0) //      Scenario 3.1 both prior and next are empty
+    {
+        void *usedNextPtr = nextHeaderPtr + *((int *)(nextHeaderPtr));
+        *((int *)(prevHeaderPtr)) = usedNextPtr - prevHeaderPtr;
+        *((int *)(usedNextPtr + ALLOCATION_PREV_OFFSET)) = usedNextPtr - prevHeaderPtr;
+    }
+    else if (isNextUsed < 0) //      Scenario 3.2 only next is empty
+    {
+        void *usedNextPtr = nextHeaderPtr + *((int *)(nextHeaderPtr));
+        *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
+        *((int *)(headPtr)) = usedNextPtr - headPtr;
+        *((int *)(usedNextPtr + ALLOCATION_PREV_OFFSET)) = usedNextPtr - headPtr;
+    }
+    else if (isPrevUsed < 0) //      Scenario 3.3 only prior is empty
+    {
+        *((int *)(prevHeaderPtr)) = nextHeaderPtr - prevHeaderPtr;
+        *((int *)(nextHeaderPtr + ALLOCATION_PREV_OFFSET)) = nextHeaderPtr - prevHeaderPtr;
+    }
+    else //      Scenario 3.4 they are full
+    {
+        *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
+    }
 }
 
 int smem_close()
@@ -301,6 +323,7 @@ void *smem_firstFit(int size, void *shmPtr)
     //find a suitable spot
     void *foundAddress = NULL;
     void *curMemPointer = shmPtr;
+    void *prevAddress = NULL;
     while (*((int *)curMemPointer) > 0)
     {
         // current in between hole can be allocated to the requesting process
@@ -313,6 +336,7 @@ void *smem_firstFit(int size, void *shmPtr)
             *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
             *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
             *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+            *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
 
             // There is enough space left for a small hole, handle connection
             if (remSizeInHole > HEADER_SIZE)
@@ -321,13 +345,18 @@ void *smem_firstFit(int size, void *shmPtr)
                 void *newHoleAddress = foundAddress + size;
                 *((int *)(newHoleAddress)) = curMemPointer + *((int *)(curMemPointer)) - newHoleAddress;
                 *((int *)(curMemPointer)) = newHoleAddress - curMemPointer;
+                *((int *)(newHoleAddress + ALLOCATION_PREV_OFFSET)) = newHoleAddress - curMemPointer;
+
+                void *nextAddressPtr = newHoleAddress + *((int *)(newHoleAddress));
+                *((int *)(nextAddressPtr + ALLOCATION_PREV_OFFSET)) = nextAddressPtr - newHoleAddress;
 
                 //set settings of remaining hole
                 *((char *)(newHoleAddress + ALLOCATION_USED_OFFSET)) = -1;
-                *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
+                *((int *)(newHoleAddress + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
             }
             return foundAddress;
         }
+        prevAddress = curMemPointer;
         curMemPointer += *((int *)(curMemPointer));
     }
 
@@ -339,10 +368,12 @@ void *smem_firstFit(int size, void *shmPtr)
         *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
         *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
         *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+        *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
 
         // create new end tail
         void *tailHoleAddress = foundAddress + size;
         *((int *)(tailHoleAddress)) = -1;
+        *((int *)(tailHoleAddress + ALLOCATION_PREV_OFFSET)) = tailHoleAddress - curMemPointer;
         *((int *)(curMemPointer)) = tailHoleAddress - curMemPointer;
     }
     return foundAddress;

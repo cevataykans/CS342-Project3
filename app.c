@@ -36,11 +36,11 @@ int main()
     {
         printf("Value at index at index %d is => %d\n", i, p[i]);
     }
-
-    printf("Value of first int is %d and second int is %d\n", t[0], t[1]);
-
-    printf("Another Char pointer value is: %d\n", *anotherP);
     smem_free(p);
+    printf("Value of first int is %d and second int is %d\n", t[0], t[1]);
+    smem_free(t);
+    printf("Another Char pointer value is: %d\n", *anotherP);
+    smem_free(anotherP);
 
     smem_close();
 
