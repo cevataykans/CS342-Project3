@@ -227,6 +227,11 @@ void smem_free(void *p)
     if (((headPtr - processMemoryPtr) + HEADER_SIZE + *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET))) == sharedMemorySize || *((int *)(headPtr + *((int *)(headPtr)))) < 0)
     {
         *((int *)(headPtr)) = -1;
+        void *prevHeaderPtr = headPtr - *((int *)(headPtr + ALLOCATION_PREV_OFFSET));
+        if (*((char *)(prevHeaderPtr + ALLOCATION_USED_OFFSET)) < 0)
+        {
+            *((int *)prevHeaderPtr) = -1;
+        }
         return;
     }
 
@@ -235,7 +240,7 @@ void smem_free(void *p)
     {
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
         void *nextHeaderPtr = headPtr + *((int *)(headPtr));
-        if (*((int *)(nextHeaderPtr)) > 0 && *((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET)) == -1) // next ptr is alos empty, merge them
+        if (*((int *)(nextHeaderPtr)) > 0 && *((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET)) < 0) // next ptr is alos empty, merge them
         {
             *((int *)(headPtr)) = *((int *)(headPtr)) + *((int *)(nextHeaderPtr));
         }
@@ -288,7 +293,7 @@ int smem_close()
     {
         if (usedData[i] > 0 && processData[i].processID == processIDToClose)
         {
-            //TODO deallocate every memory used by the process
+            //deallocate every memory used by the process
             void *curHead = processData[i].ptr;
             void *prevHead = NULL;
             while (*((int *)(curHead)) > 0)
@@ -306,10 +311,10 @@ int smem_close()
                 }
             }
 
-            //TODO unmap the memory
+            // unmap the memory
             int unmapRes = munmap(processData[i].ptr, sharedMemorySize);
 
-            //TODO check unmap result
+            // check unmap result
             if (unmapRes >= 0)
             {
                 usedData[i] = -1;
@@ -404,3 +409,11 @@ void *smem_worstFit(int size, void *shmPtr)
 {
     return (NULL);
 }
+
+// HEADER INFO
+// 4 byte - next header offset (int)
+// 4 byte - previous header offset (int)
+// 4 byte - pid (pid_t)
+// 1 byte - isUsed signed char (char)
+// 4 byte - length of the allocated size for the hole (int)
+// size bytes where size is denoted in the length info.
