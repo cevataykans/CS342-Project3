@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include "smemlib.h"
+#include <limits.h>
 // TODO: remove all printfs
 
 // Define a name for your shared memory; you can give any name that start with a slash character; it will be like a filename.
@@ -221,36 +222,55 @@ void smem_free(void *p)
         return;
     }
 
-    // scenario 1 - at the end of the list
     void *headPtr = p - HEADER_SIZE;
 
+    // scenario 1 - at the end of the list
+    //DONE
     if (((headPtr - processMemoryPtr) + HEADER_SIZE + *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET))) == sharedMemorySize || *((int *)(headPtr + *((int *)(headPtr)))) < 0)
     {
         *((int *)(headPtr)) = -1;
-        void *prevHeaderPtr = headPtr - *((int *)(headPtr + ALLOCATION_PREV_OFFSET));
-        if (*((char *)(prevHeaderPtr + ALLOCATION_USED_OFFSET)) < 0)
+        if (headPtr - processMemoryPtr != 0) // check if deallocation is not made at the first index that is eual to last index => single node.
         {
-            *((int *)prevHeaderPtr) = -1;
+            void *prevHeaderPtr = headPtr - *((int *)(headPtr + ALLOCATION_PREV_OFFSET));
+            if (*((char *)(prevHeaderPtr + ALLOCATION_USED_OFFSET)) < 0)
+            {
+                *((int *)prevHeaderPtr) = -1;
+            }
         }
         return;
     }
 
     // scneraio 2 - at the beginning of the list
+    //DONE
     if (headPtr - processMemoryPtr == 0)
     {
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
         void *nextHeaderPtr = headPtr + *((int *)(headPtr));
-        if (*((int *)(nextHeaderPtr)) > 0 && *((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET)) < 0) // next ptr is alos empty, merge them
+        if (*((int *)(nextHeaderPtr)) < 0) // next ptr is end of the list
         {
-            *((int *)(headPtr)) = *((int *)(headPtr)) + *((int *)(nextHeaderPtr));
+            *((int *)(headPtr)) = -1;
+        }
+        else if (*((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET)) < 0) // next ptr is not used, merge
+        {
+            void *usedMemoryPtr = nextHeaderPtr + *((int *)(nextHeaderPtr));
+            *((int *)(headPtr)) = usedMemoryPtr - headPtr;
+            *((int *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
+            *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = usedMemoryPtr - (headPtr + HEADER_SIZE);
+
+            *((int *)(usedMemoryPtr + ALLOCATION_PREV_OFFSET)) = usedMemoryPtr - headPtr;
+        }
+        else // next ptr is used
+        {
+            *((int *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
+            *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
         }
         return;
     }
 
     // scenario 3 - in the middle
+    //DONE?
     void *prevHeaderPtr = headPtr - *((int *)(headPtr + ALLOCATION_PREV_OFFSET));
     void *nextHeaderPtr = headPtr + *((int *)(headPtr));
-
     char isPrevUsed = *((char *)(prevHeaderPtr + ALLOCATION_USED_OFFSET));
     char isNextUsed = *((char *)(nextHeaderPtr + ALLOCATION_USED_OFFSET));
     if (isPrevUsed < 0 && isNextUsed < 0) //      Scenario 3.1 both prior and next are empty
@@ -258,6 +278,7 @@ void smem_free(void *p)
         void *usedNextPtr = nextHeaderPtr + *((int *)(nextHeaderPtr));
         *((int *)(prevHeaderPtr)) = usedNextPtr - prevHeaderPtr;
         *((int *)(usedNextPtr + ALLOCATION_PREV_OFFSET)) = usedNextPtr - prevHeaderPtr;
+        *((int *)(prevHeaderPtr + ALLOCATION_LENGTH_OFFSET)) = usedNextPtr - (prevHeaderPtr + HEADER_SIZE);
     }
     else if (isNextUsed < 0) //      Scenario 3.2 only next is empty
     {
@@ -265,15 +286,18 @@ void smem_free(void *p)
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
         *((int *)(headPtr)) = usedNextPtr - headPtr;
         *((int *)(usedNextPtr + ALLOCATION_PREV_OFFSET)) = usedNextPtr - headPtr;
+        *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = usedNextPtr - (headPtr + HEADER_SIZE);
     }
     else if (isPrevUsed < 0) //      Scenario 3.3 only prior is empty
     {
         *((int *)(prevHeaderPtr)) = nextHeaderPtr - prevHeaderPtr;
+        *((int *)(prevHeaderPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (prevHeaderPtr + HEADER_SIZE);
         *((int *)(nextHeaderPtr + ALLOCATION_PREV_OFFSET)) = nextHeaderPtr - prevHeaderPtr;
     }
     else //      Scenario 3.4 they are full
     {
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
+        *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
     }
 }
 
@@ -389,7 +413,14 @@ void *smem_firstFit(int size, void *shmPtr)
         *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
         *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
         *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
-        *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+        if (prevAddress != NULL)
+        {
+            *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+        }
+        else
+        {
+            *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = -1;
+        }
 
         // create new end tail
         void *tailHoleAddress = foundAddress + size;
@@ -402,12 +433,285 @@ void *smem_firstFit(int size, void *shmPtr)
 
 void *smem_bestFit(int size, void *shmPtr)
 {
-    return (NULL);
+    void *bestFitAddress = NULL;
+    void *bestFitPrevAddress = NULL;
+    void *curMemPointer = shmPtr;
+    void *prevAddress = NULL;
+    int minSizeFound = INT_MAX;
+    while (*((int *)curMemPointer) > 0)
+    {
+        int sizeInBlock = *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET));
+        // current in between hole can be allocated to the requesting process
+        if (*((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) < 0 &&
+            sizeInBlock >= size)
+        {
+            // check size
+            if (minSizeFound > sizeInBlock)
+            {
+                minSizeFound = sizeInBlock;
+                bestFitPrevAddress = prevAddress;
+                bestFitAddress = curMemPointer;
+                if (minSizeFound - size == 0) // actually the best fit possible, return immediately
+                {
+                    *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+                    *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+                    *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+                    if (curMemPointer - shmPtr != 0)
+                    {
+                        *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+                    }
+                    else
+                    {
+                        *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = -1;
+                    }
+                    return bestFitAddress + HEADER_SIZE;
+                }
+            }
+        }
+        prevAddress = curMemPointer;
+        curMemPointer += *((int *)(curMemPointer));
+    }
+
+    // check if there is enough memory at the end
+    if (sharedMemorySize - (curMemPointer - shmPtr) > HEADER_SIZE + size)
+    {
+        // best fit could not be found, try to insert at the end
+        if (bestFitAddress == NULL)
+        {
+            // allocate memory
+            bestFitAddress = curMemPointer + HEADER_SIZE;
+            *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+            *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+            *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+            if (curMemPointer - shmPtr != 0)
+            {
+                *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+            }
+            else
+            {
+                *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = -1;
+            }
+
+            // create new end tail
+            void *tailHoleAddress = bestFitAddress + size;
+            *((int *)(tailHoleAddress)) = -1;
+            *((int *)(tailHoleAddress + ALLOCATION_PREV_OFFSET)) = tailHoleAddress - curMemPointer;
+            *((int *)(curMemPointer)) = tailHoleAddress - curMemPointer;
+            return bestFitAddress;
+        }
+        else // compare remaining memory and best fit
+        {
+            int remMemSize = sharedMemorySize - ((curMemPointer - shmPtr) + HEADER_SIZE);
+            if (remMemSize < minSizeFound && remMemSize >= size) // insert it end the tail
+            {
+                // allocate memory
+                bestFitAddress = curMemPointer + HEADER_SIZE;
+                *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+                *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+                *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+                if (curMemPointer - shmPtr != 0)
+                {
+                    *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+                }
+                else
+                {
+                    *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = -1;
+                }
+
+                // create new end tail
+                void *tailHoleAddress = bestFitAddress + size;
+                *((int *)(tailHoleAddress)) = -1;
+                *((int *)(tailHoleAddress + ALLOCATION_PREV_OFFSET)) = tailHoleAddress - curMemPointer;
+                *((int *)(curMemPointer)) = tailHoleAddress - curMemPointer;
+            }
+            else // insert it at the bestAddressFiund
+            {
+                *((char *)(bestFitAddress + ALLOCATION_USED_OFFSET)) = 1;
+                *((pid_t *)(bestFitAddress + ALLOCATION_PID_OFFSET)) = getpid();
+                *((int *)(bestFitAddress + ALLOCATION_LENGTH_OFFSET)) = size;
+                *((int *)(bestFitAddress + ALLOCATION_PREV_OFFSET)) = bestFitAddress - bestFitPrevAddress;
+                int remSizeInHole = *((int *)(bestFitAddress + ALLOCATION_LENGTH_OFFSET)) - size;
+                // There is enough space left for a small hole, handle connection
+                if (remSizeInHole > HEADER_SIZE)
+                {
+                    // connect handle
+                    void *newHoleAddress = bestFitAddress + size + HEADER_SIZE;
+                    *((int *)(newHoleAddress)) = bestFitAddress + *((int *)(bestFitAddress)) - newHoleAddress;
+                    *((int *)(bestFitAddress)) = newHoleAddress - bestFitAddress;
+                    *((int *)(newHoleAddress + ALLOCATION_PREV_OFFSET)) = newHoleAddress - bestFitAddress;
+
+                    void *nextAddressPtr = newHoleAddress + *((int *)(newHoleAddress));
+                    *((int *)(nextAddressPtr + ALLOCATION_PREV_OFFSET)) = nextAddressPtr - newHoleAddress;
+
+                    //set settings of remaining hole
+                    *((char *)(newHoleAddress + ALLOCATION_USED_OFFSET)) = -1;
+                    *((int *)(newHoleAddress + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
+                }
+                bestFitAddress = bestFitAddress + HEADER_SIZE;
+            }
+            return bestFitAddress;
+        }
+    }
+    else if (bestFitAddress != NULL) // not enough memory left, chec best address found to insert here
+    {
+        *((char *)(bestFitAddress + ALLOCATION_USED_OFFSET)) = 1;
+        *((pid_t *)(bestFitAddress + ALLOCATION_PID_OFFSET)) = getpid();
+        *((int *)(bestFitAddress + ALLOCATION_LENGTH_OFFSET)) = size;
+        *((int *)(bestFitAddress + ALLOCATION_PREV_OFFSET)) = bestFitAddress - bestFitPrevAddress;
+        int remSizeInHole = *((int *)(bestFitAddress + ALLOCATION_LENGTH_OFFSET)) - size;
+        // There is enough space left for a small hole, handle connection
+        if (remSizeInHole > HEADER_SIZE)
+        {
+            // connect handle
+            void *newHoleAddress = bestFitAddress + size + HEADER_SIZE;
+            *((int *)(newHoleAddress)) = bestFitAddress + *((int *)(bestFitAddress)) - newHoleAddress;
+            *((int *)(bestFitAddress)) = newHoleAddress - bestFitAddress;
+            *((int *)(newHoleAddress + ALLOCATION_PREV_OFFSET)) = newHoleAddress - bestFitAddress;
+
+            void *nextAddressPtr = newHoleAddress + *((int *)(newHoleAddress));
+            *((int *)(nextAddressPtr + ALLOCATION_PREV_OFFSET)) = nextAddressPtr - newHoleAddress;
+
+            //set settings of remaining hole
+            *((char *)(newHoleAddress + ALLOCATION_USED_OFFSET)) = -1;
+            *((int *)(newHoleAddress + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
+        }
+        return bestFitAddress + HEADER_SIZE;
+    }
+    return NULL;
 }
 
 void *smem_worstFit(int size, void *shmPtr)
 {
-    return (NULL);
+    void *worstFitAddress = NULL;
+    void *worstFitPrevAddress = NULL;
+    void *curMemPointer = shmPtr;
+    void *prevAddress = NULL;
+    int maxSizeFound = -1;
+    while (*((int *)curMemPointer) > 0)
+    {
+        int sizeInBlock = *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET));
+        // current in between hole can be allocated to the requesting process
+        if (*((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) < 0 &&
+            sizeInBlock >= size)
+        {
+            // check size
+            if (maxSizeFound < sizeInBlock)
+            {
+                maxSizeFound = sizeInBlock;
+                worstFitPrevAddress = prevAddress;
+                worstFitAddress = curMemPointer;
+            }
+        }
+        prevAddress = curMemPointer;
+        curMemPointer += *((int *)(curMemPointer));
+    }
+
+    // check if there is enough memory at the end
+    if (sharedMemorySize - (curMemPointer - shmPtr) > HEADER_SIZE + size)
+    {
+        // best fit could not be found, try to insert at the end
+        if (worstFitAddress == NULL)
+        {
+            // allocate memory
+            worstFitAddress = curMemPointer + HEADER_SIZE;
+            *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+            *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+            *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+            if (curMemPointer - shmPtr != 0)
+            {
+                *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+            }
+            else
+            {
+                *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = -1;
+            }
+
+            // create new end tail
+            void *tailHoleAddress = worstFitAddress + size;
+            *((int *)(tailHoleAddress)) = -1;
+            *((int *)(tailHoleAddress + ALLOCATION_PREV_OFFSET)) = tailHoleAddress - curMemPointer;
+            *((int *)(curMemPointer)) = tailHoleAddress - curMemPointer;
+            return worstFitAddress;
+        }
+        else // compare remaining memory and best fit
+        {
+            int remMemSize = sharedMemorySize - ((curMemPointer - shmPtr) + HEADER_SIZE);
+            if (remMemSize > maxSizeFound && remMemSize >= size) // insert it end the tail
+            {
+                // allocate memory
+                worstFitAddress = curMemPointer + HEADER_SIZE;
+                *((char *)(curMemPointer + ALLOCATION_USED_OFFSET)) = 1;
+                *((pid_t *)(curMemPointer + ALLOCATION_PID_OFFSET)) = getpid();
+                *((int *)(curMemPointer + ALLOCATION_LENGTH_OFFSET)) = size;
+                if (curMemPointer - shmPtr != 0)
+                {
+                    *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = curMemPointer - prevAddress;
+                }
+                else
+                {
+                    *((int *)(curMemPointer + ALLOCATION_PREV_OFFSET)) = -1;
+                }
+
+                // create new end tail
+                void *tailHoleAddress = worstFitAddress + size;
+                *((int *)(tailHoleAddress)) = -1;
+                *((int *)(tailHoleAddress + ALLOCATION_PREV_OFFSET)) = tailHoleAddress - curMemPointer;
+                *((int *)(curMemPointer)) = tailHoleAddress - curMemPointer;
+            }
+            else // insert it at the worstAddressFiund
+            {
+                *((char *)(worstFitAddress + ALLOCATION_USED_OFFSET)) = 1;
+                *((pid_t *)(worstFitAddress + ALLOCATION_PID_OFFSET)) = getpid();
+                *((int *)(worstFitAddress + ALLOCATION_LENGTH_OFFSET)) = size;
+                *((int *)(worstFitAddress + ALLOCATION_PREV_OFFSET)) = worstFitAddress - worstFitPrevAddress;
+                int remSizeInHole = *((int *)(worstFitAddress + ALLOCATION_LENGTH_OFFSET)) - size;
+                // There is enough space left for a small hole, handle connection
+                if (remSizeInHole > HEADER_SIZE)
+                {
+                    // connect handle
+                    void *newHoleAddress = worstFitAddress + size + HEADER_SIZE;
+                    *((int *)(newHoleAddress)) = worstFitAddress + *((int *)(worstFitAddress)) - newHoleAddress;
+                    *((int *)(worstFitAddress)) = newHoleAddress - worstFitAddress;
+                    *((int *)(newHoleAddress + ALLOCATION_PREV_OFFSET)) = newHoleAddress - worstFitAddress;
+
+                    void *nextAddressPtr = newHoleAddress + *((int *)(newHoleAddress));
+                    *((int *)(nextAddressPtr + ALLOCATION_PREV_OFFSET)) = nextAddressPtr - newHoleAddress;
+
+                    //set settings of remaining hole
+                    *((char *)(newHoleAddress + ALLOCATION_USED_OFFSET)) = -1;
+                    *((int *)(newHoleAddress + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
+                }
+                worstFitAddress = worstFitAddress + HEADER_SIZE;
+            }
+            return worstFitAddress;
+        }
+    }
+    else if (worstFitAddress != NULL) // not enough memory left, chec worst address found to insert here
+    {
+        *((char *)(worstFitAddress + ALLOCATION_USED_OFFSET)) = 1;
+        *((pid_t *)(worstFitAddress + ALLOCATION_PID_OFFSET)) = getpid();
+        *((int *)(worstFitAddress + ALLOCATION_LENGTH_OFFSET)) = size;
+        *((int *)(worstFitAddress + ALLOCATION_PREV_OFFSET)) = worstFitAddress - worstFitPrevAddress;
+        int remSizeInHole = *((int *)(worstFitAddress + ALLOCATION_LENGTH_OFFSET)) - size;
+        // There is enough space left for a small hole, handle connection
+        if (remSizeInHole > HEADER_SIZE)
+        {
+            // connect handle
+            void *newHoleAddress = worstFitAddress + size + HEADER_SIZE;
+            *((int *)(newHoleAddress)) = worstFitAddress + *((int *)(worstFitAddress)) - newHoleAddress;
+            *((int *)(worstFitAddress)) = newHoleAddress - worstFitAddress;
+            *((int *)(newHoleAddress + ALLOCATION_PREV_OFFSET)) = newHoleAddress - worstFitAddress;
+
+            void *nextAddressPtr = newHoleAddress + *((int *)(newHoleAddress));
+            *((int *)(nextAddressPtr + ALLOCATION_PREV_OFFSET)) = nextAddressPtr - newHoleAddress;
+
+            //set settings of remaining hole
+            *((char *)(newHoleAddress + ALLOCATION_USED_OFFSET)) = -1;
+            *((int *)(newHoleAddress + ALLOCATION_LENGTH_OFFSET)) = remSizeInHole;
+        }
+        return worstFitAddress + HEADER_SIZE;
+    }
+    return NULL;
 }
 
 // HEADER INFO
