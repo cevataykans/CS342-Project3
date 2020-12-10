@@ -103,6 +103,8 @@ int smem_init(int segmentsize)
         }
         sharedMemorySize = segmentsize;
         allocationAlgo = &smem_firstFit;
+
+        // Initialize semaphore(s)
     }
     printf("Cur pid size is: %ld\n", sizeof(getpid()));
     return shm_fd >= 0 ? 0 : -1;
@@ -119,6 +121,8 @@ int smem_remove()
     sharedMemorySize = -1;
     memoryUsed = -1;
 
+    // Deinitialize semephore
+
     return shm_unlink(sharedMemoryName) >= 0 ? 0 : -1;
 }
 
@@ -129,6 +133,8 @@ int smem_open()
     if (sharedMemorySize < 0)
     {
         printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
+        //TODO: close semephore
+
         return -1;
     }
 
@@ -151,14 +157,20 @@ int smem_open()
                     processCount++;
 
                     printf("Library successfuly mapped process to the shared memory\n");
+                    //TODO: close semephore
+
                     return 0;
                 }
                 printf("Library COULD NOT mapped process to the shared memory\n");
+                //TODO: close semephore
+
                 return -1;
             }
         }
     }
     printf("ERROR, MORE THAN 10 process!\n");
+    //TODO: close semephore
+
     return -1;
 }
 
@@ -180,6 +192,8 @@ void *smem_alloc(int size)
     if (processMemoryPtr == NULL) //check permission
     {
         printf("You do not have permission to allocate memory!\n");
+        //TODO: close semephore
+
         return NULL;
     }
 
@@ -197,8 +211,10 @@ void *smem_alloc(int size)
         memoryUsed = 1;
     }
 
-    //return smem_firstFit(size, processMemoryPtr);
-    return allocationAlgo(size, processMemoryPtr);
+    void *ptr = allocationAlgo(size, processMemoryPtr);
+    //TODO: close semephore
+
+    return ptr;
 }
 
 void smem_free(void *p)
@@ -219,6 +235,8 @@ void smem_free(void *p)
     if (processMemoryPtr == NULL) //check permission
     {
         printf("You do not have permission to allocate memory!\n");
+        //TODO: close semephore
+
         return;
     }
 
@@ -237,6 +255,8 @@ void smem_free(void *p)
                 *((int *)prevHeaderPtr) = -1;
             }
         }
+        //TODO: close semephore
+
         return;
     }
 
@@ -264,6 +284,8 @@ void smem_free(void *p)
             *((int *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
             *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
         }
+        //TODO: close semephore
+
         return;
     }
 
@@ -299,6 +321,7 @@ void smem_free(void *p)
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
         *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
     }
+    //TODO: close semephore
 }
 
 int smem_close()
@@ -308,6 +331,8 @@ int smem_close()
     if (sharedMemorySize < 0)
     {
         printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
+        //TODO: close semephore
+
         return -1;
     }
 
@@ -345,13 +370,19 @@ int smem_close()
                 processCount--;
 
                 printf("Library successfuly UNMAPPED process\n");
+                //TODO: close semephore
+
                 return 0;
             }
             printf("Library COULD NOT unmap\n");
+            //TODO: close semephore
+
             return -1;
         }
     }
     printf("Requesting process is not using the library, denided service!\n");
+    //TODO: close semephore
+
     return -1;
 }
 
