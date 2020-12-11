@@ -11,13 +11,14 @@
 #include <unistd.h>
 #include "smemlib.h"
 #include <limits.h>
+#include <semaphore.h> 
 // TODO: remove all printfs
 
 // Define a name for your shared memory; you can give any name that start with a slash character; it will be like a filename.
 char sharedMemoryName[] = "/sharedSegmentName";
 
 // Define semaphore(s)
-// I think one is enoguh?
+sem_t mutex;
 
 // Define your stuctures and variables.
 int shm_fd;
@@ -105,6 +106,8 @@ int smem_init(int segmentsize)
         allocationAlgo = &smem_firstFit;
 
         // Initialize semaphore(s)
+        sem_init(&mutex, 1, 1); // First 1 indicates that it is used between processes, second 1 is the initial value
+
     }
     printf("Cur pid size is: %ld\n", sizeof(getpid()));
     return shm_fd >= 0 ? 0 : -1;
@@ -122,18 +125,20 @@ int smem_remove()
     memoryUsed = -1;
 
     // Deinitialize semephore
+    sem_destroy(&mutex); 
 
     return shm_unlink(sharedMemoryName) >= 0 ? 0 : -1;
 }
 
 int smem_open()
 {
-    //TODO protect with semephore the whole function
+    //To avoid from race condition
+    sem_wait(&mutex); 
 
     if (sharedMemorySize < 0)
     {
         printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
-        //TODO: close semephore
+        sem_post(&mutex);
 
         return -1;
     }
@@ -157,26 +162,28 @@ int smem_open()
                     processCount++;
 
                     printf("Library successfuly mapped process to the shared memory\n");
-                    //TODO: close semephore
+                    sem_post(&mutex);
 
                     return 0;
                 }
                 printf("Library COULD NOT mapped process to the shared memory\n");
-                //TODO: close semephore
+                sem_post(&mutex);
 
                 return -1;
             }
         }
     }
     printf("ERROR, MORE THAN 10 process!\n");
-    //TODO: close semephore
+    
+    sem_post(&mutex);
 
     return -1;
 }
 
 void *smem_alloc(int size)
 {
-    //TODO protect with semephore the whole function
+    //To avoid from race condition
+    sem_wait(&mutex); 
 
     // get the memory ptr of the process
     pid_t requestingProcessID = getpid();
@@ -192,7 +199,7 @@ void *smem_alloc(int size)
     if (processMemoryPtr == NULL) //check permission
     {
         printf("You do not have permission to allocate memory!\n");
-        //TODO: close semephore
+        sem_post(&mutex);
 
         return NULL;
     }
@@ -212,14 +219,16 @@ void *smem_alloc(int size)
     }
 
     void *ptr = allocationAlgo(size, processMemoryPtr);
-    //TODO: close semephore
+    
+    sem_post(&mutex);
 
     return ptr;
 }
 
 void smem_free(void *p)
 {
-    //TODO protect with semephore the whole function
+    //To avoid from race condition
+    sem_wait(&mutex); 
 
     // get the memory ptr of the process
     pid_t requestingProcessID = getpid();
@@ -235,7 +244,8 @@ void smem_free(void *p)
     if (processMemoryPtr == NULL) //check permission
     {
         printf("You do not have permission to allocate memory!\n");
-        //TODO: close semephore
+        
+        sem_post(&mutex);
 
         return;
     }
@@ -255,7 +265,8 @@ void smem_free(void *p)
                 *((int *)prevHeaderPtr) = -1;
             }
         }
-        //TODO: close semephore
+
+        sem_post(&mutex);
 
         return;
     }
@@ -284,7 +295,8 @@ void smem_free(void *p)
             *((int *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
             *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
         }
-        //TODO: close semephore
+        
+        sem_post(&mutex);
 
         return;
     }
@@ -321,17 +333,18 @@ void smem_free(void *p)
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
         *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
     }
-    //TODO: close semephore
+    sem_post(&mutex);
 }
 
 int smem_close()
 {
-    //TODO protect with semephores the whole function
+    //To avoid from race condition
+    sem_wait(&mutex); 
 
     if (sharedMemorySize < 0)
     {
         printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
-        //TODO: close semephore
+        sem_post(&mutex);
 
         return -1;
     }
@@ -370,18 +383,18 @@ int smem_close()
                 processCount--;
 
                 printf("Library successfuly UNMAPPED process\n");
-                //TODO: close semephore
+                sem_post(&mutex);
 
                 return 0;
             }
             printf("Library COULD NOT unmap\n");
-            //TODO: close semephore
+            sem_post(&mutex);
 
             return -1;
         }
     }
     printf("Requesting process is not using the library, denided service!\n");
-    //TODO: close semephore
+    sem_post(&mutex);
 
     return -1;
 }
