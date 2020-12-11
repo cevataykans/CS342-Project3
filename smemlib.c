@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include "smemlib.h"
 #include <limits.h>
-#include <semaphore.h> 
+#include <semaphore.h>
 // TODO: remove all printfs
 
 // Define a name for your shared memory; you can give any name that start with a slash character; it will be like a filename.
@@ -107,7 +107,6 @@ int smem_init(int segmentsize)
 
         // Initialize semaphore(s)
         sem_init(&mutex, 1, 1); // First 1 indicates that it is used between processes, second 1 is the initial value
-
     }
     printf("Cur pid size is: %ld\n", sizeof(getpid()));
     return shm_fd >= 0 ? 0 : -1;
@@ -125,7 +124,7 @@ int smem_remove()
     memoryUsed = -1;
 
     // Deinitialize semephore
-    sem_destroy(&mutex); 
+    sem_destroy(&mutex);
 
     return shm_unlink(sharedMemoryName) >= 0 ? 0 : -1;
 }
@@ -133,7 +132,7 @@ int smem_remove()
 int smem_open()
 {
     //To avoid from race condition
-    sem_wait(&mutex); 
+    sem_wait(&mutex);
 
     if (sharedMemorySize < 0)
     {
@@ -174,7 +173,7 @@ int smem_open()
         }
     }
     printf("ERROR, MORE THAN 10 process!\n");
-    
+
     sem_post(&mutex);
 
     return -1;
@@ -183,7 +182,7 @@ int smem_open()
 void *smem_alloc(int size)
 {
     //To avoid from race condition
-    sem_wait(&mutex); 
+    sem_wait(&mutex);
 
     // get the memory ptr of the process
     pid_t requestingProcessID = getpid();
@@ -194,6 +193,7 @@ void *smem_alloc(int size)
         if (usedData[i] > 0 && processData[i].processID == requestingProcessID)
         {
             processMemoryPtr = processData[i].ptr;
+            break;
         }
     }
     if (processMemoryPtr == NULL) //check permission
@@ -219,7 +219,7 @@ void *smem_alloc(int size)
     }
 
     void *ptr = allocationAlgo(size, processMemoryPtr);
-    
+
     sem_post(&mutex);
 
     return ptr;
@@ -228,8 +228,81 @@ void *smem_alloc(int size)
 void smem_free(void *p)
 {
     //To avoid from race condition
-    sem_wait(&mutex); 
+    sem_wait(&mutex);
 
+    smem_library_free(p);
+
+    sem_post(&mutex);
+}
+
+pid_t closeingProcess;
+int smem_close()
+{
+    //To avoid from race condition
+    sem_wait(&mutex);
+    closeingProcess = getpid();
+
+    if (sharedMemorySize < 0)
+    {
+        printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
+        sem_post(&mutex);
+
+        return -1;
+    }
+
+    // find the process
+    pid_t processIDToClose = getpid();
+    for (int i = 0; i < MAX_PROCESS_COUNT; i++)
+    {
+        if (usedData[i] > 0 && processData[i].processID == processIDToClose)
+        {
+            //deallocate every memory used by the process
+            void *curHead = processData[i].ptr;
+            void *prevHead = NULL;
+            while (*((int *)(curHead)) > 0)
+            {
+                if (*((pid_t *)(curHead + ALLOCATION_PID_OFFSET)) == processIDToClose)
+                {
+                    prevHead = curHead;
+                }
+                curHead += *((int *)(curHead));
+                if (prevHead != NULL)
+                {
+                    printf("Forced deallocating to prevent memory leak...\n");
+                    smem_library_free(prevHead + HEADER_SIZE);
+                    prevHead = NULL;
+                }
+                printf("slm\n");
+            }
+
+            // unmap the memory
+            int unmapRes = munmap(processData[i].ptr, sharedMemorySize);
+
+            // check unmap result
+            if (unmapRes >= 0)
+            {
+                usedData[i] = -1;
+                processCount--;
+
+                printf("Library successfuly UNMAPPED process\n");
+                sem_post(&mutex);
+
+                return 0;
+            }
+            printf("Library COULD NOT unmap\n");
+            sem_post(&mutex);
+
+            return -1;
+        }
+    }
+    printf("Requesting process is not using the library, denided service!\n");
+    sem_post(&mutex);
+
+    return -1;
+}
+
+void smem_library_free(void *p)
+{
     // get the memory ptr of the process
     pid_t requestingProcessID = getpid();
     void *processMemoryPtr = NULL;
@@ -244,8 +317,6 @@ void smem_free(void *p)
     if (processMemoryPtr == NULL) //check permission
     {
         printf("You do not have permission to allocate memory!\n");
-        
-        sem_post(&mutex);
 
         return;
     }
@@ -265,9 +336,6 @@ void smem_free(void *p)
                 *((int *)prevHeaderPtr) = -1;
             }
         }
-
-        sem_post(&mutex);
-
         return;
     }
 
@@ -295,9 +363,6 @@ void smem_free(void *p)
             *((int *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
             *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
         }
-        
-        sem_post(&mutex);
-
         return;
     }
 
@@ -333,70 +398,6 @@ void smem_free(void *p)
         *((char *)(headPtr + ALLOCATION_USED_OFFSET)) = -1;
         *((int *)(headPtr + ALLOCATION_LENGTH_OFFSET)) = nextHeaderPtr - (headPtr + HEADER_SIZE);
     }
-    sem_post(&mutex);
-}
-
-int smem_close()
-{
-    //To avoid from race condition
-    sem_wait(&mutex); 
-
-    if (sharedMemorySize < 0)
-    {
-        printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
-        sem_post(&mutex);
-
-        return -1;
-    }
-
-    // find the process
-    pid_t processIDToClose = getpid();
-    for (int i = 0; i < MAX_PROCESS_COUNT; i++)
-    {
-        if (usedData[i] > 0 && processData[i].processID == processIDToClose)
-        {
-            //deallocate every memory used by the process
-            void *curHead = processData[i].ptr;
-            void *prevHead = NULL;
-            while (*((int *)(curHead)) > 0)
-            {
-                if (*((pid_t *)(curHead + ALLOCATION_PID_OFFSET)) == processIDToClose)
-                {
-                    prevHead = curHead;
-                }
-                curHead += *((int *)(curHead));
-                if (prevHead != NULL)
-                {
-                    printf("Forced deallocating to prevent memory leak...\n");
-                    smem_free(prevHead + HEADER_SIZE);
-                    prevHead = NULL;
-                }
-            }
-
-            // unmap the memory
-            int unmapRes = munmap(processData[i].ptr, sharedMemorySize);
-
-            // check unmap result
-            if (unmapRes >= 0)
-            {
-                usedData[i] = -1;
-                processCount--;
-
-                printf("Library successfuly UNMAPPED process\n");
-                sem_post(&mutex);
-
-                return 0;
-            }
-            printf("Library COULD NOT unmap\n");
-            sem_post(&mutex);
-
-            return -1;
-        }
-    }
-    printf("Requesting process is not using the library, denided service!\n");
-    sem_post(&mutex);
-
-    return -1;
 }
 
 //
