@@ -1,7 +1,15 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include "smemlib.h"
+
+struct ExperimentResult{
+    float failRate;
+    float averageUnusedBlockCount;
+    float averageUnusedSizeLength;
+};
 
 int getRandomInt(int i)
 {
@@ -10,13 +18,13 @@ int getRandomInt(int i)
     return j;
 }
 
-int main()
-{
-    smem_init(32768);
-
+void startExperiment(int pid){
+    //printf("%d hmmm\n", pid);
     int failCount = 0;
     int unusedBlockCount = 0;
     int unusedSizeLength = 0;
+    int totalUnusedBlockCount = 0;
+    int totalUnusedSizeLength = 0;
 
     int libStatus = smem_open();
     if (libStatus >= 0)
@@ -32,7 +40,7 @@ int main()
             count[index]++;
             if (pointers[index] == NULL)
             {
-                pointers[index] = smem_alloc((index + 1) * 1024);
+                pointers[index] = smem_alloc((index + 1) * 2048);
                 if (pointers[index] == NULL)
                     failCount++;
             }
@@ -42,16 +50,35 @@ int main()
                 pointers[index] = NULL;
 
                 unusedBlockCount = smem_get_mem_utilization(&unusedSizeLength);
-                printf("Total unused block count is: %d \t while total unused size is %d bytes.\n", unusedBlockCount, unusedSizeLength);
+                totalUnusedBlockCount += unusedBlockCount;
+                totalUnusedSizeLength += unusedSizeLength;
             }
         }
+    }
+    printf("");
+    smem_close();
+    printf("(%d)\tAverage unused block count is: %f\n", pid, totalUnusedBlockCount/1000.0);
+    printf("(%d)\tAverage unused size is %f bytes.\n", pid, totalUnusedSizeLength/1000.0);
+    printf("(%d)\tFail rate is %f\n", pid, failCount/1000.0);
+}
 
-        for (int i = 0; i < 12; i++)
-        {
-            printf("%d\n", count[i]);
+int main()
+{
+    pid_t n;
+    smem_init(32768);
+
+    for(int i = 0 ; i < 10 ; i++){
+        n = fork();
+        if(n == 0){ // child
+            //printf("%d\n", i);
+            startExperiment(i);
+            exit(0);
         }
     }
-    smem_close();
-    printf("Fail rate is %f\n", failCount / 1000.0);
+
+    for(int i = 0 ; i < 10 ; i++){
+        wait(NULL);
+    }
+    
     return 0;
 }
