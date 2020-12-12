@@ -104,6 +104,7 @@ int smem_init(int segmentsize)
         }
         sharedMemorySize = segmentsize;
         allocationAlgo = &smem_firstFit;
+        //allocationAlgo = &smem_worstFit;
 
         // Initialize semaphore(s)
         sem_init(&mutex, 1, 1); // First 1 indicates that it is used between processes, second 1 is the initial value
