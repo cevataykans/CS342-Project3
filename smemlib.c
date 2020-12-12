@@ -12,7 +12,6 @@
 #include "smemlib.h"
 #include <limits.h>
 #include <semaphore.h>
-// TODO: remove all printfs
 
 // Define a name for your shared memory; you can give any name that start with a slash character; it will be like a filename.
 char sharedMemoryName[] = "/sharedSegmentName";
@@ -51,7 +50,6 @@ int smem_init(int segmentsize)
     // validate segment size
     if (segmentsize < MIN_SEGMENT_SIZE || segmentsize > MAX_SEGMENT_SIZE)
     {
-        //printf("Error! your allocation must be between 2^15 (32 KB) and 2^22 (4 MB)\n");
         return -1;
     }
 
@@ -63,39 +61,32 @@ int smem_init(int segmentsize)
     }
     if (powerChecker != segmentsize)
     {
-        //printf("The given segment size must be a power of 2!");
         return -1;
     }
 
-    //printf("Smem init called\n"); // remove all printfs when you are submitting to us.
     shm_fd = shm_open(sharedMemoryName, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (shm_fd < 0)
     {
-        if (errno == EEXIST) // WE CAN ACTUALLY CALL THE smem_remove here? ask ibrahim hocas
+        if (errno == EEXIST) 
         {
-            //printf("Shared memory already exists, calling unlink to reallocate memory!\n");
             shm_unlink(sharedMemoryName);
             shm_fd = shm_open(sharedMemoryName, O_CREAT | O_EXCL | O_RDWR, 0666);
         }
         else
         {
-            //printf("Opening shared memory failed...\n");
             return -1;
         }
     }
 
     if (shm_fd >= 0)
     {
-        //printf("Shared memory opened, truncating...\n");
         int truncateRes = ftruncate(shm_fd, segmentsize);
         if (truncateRes < 0)
         {
-            //printf("Truncate failed...\n");
             return -1;
         }
         sharedMemorySize = segmentsize;
-        //allocationAlgo = &smem_firstFit;
-        allocationAlgo = &smem_worstFit;
+        allocationAlgo = &smem_firstFit;
 
         // Initialize semaphore(s)
         sem_init(&mutex, 1, 1); // First 1 indicates that it is used between processes, second 1 is the initial value
@@ -127,7 +118,6 @@ int smem_open()
 
     if (sharedMemorySize < 0)
     {
-        //printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
         sem_post(&mutex);
 
         return -1;
@@ -151,19 +141,16 @@ int smem_open()
                     usedData[i] = 1;
                     processCount++;
 
-                    //printf("Library successfuly mapped process to the shared memory\n");
                     sem_post(&mutex);
 
                     return 0;
                 }
-                //printf("Library COULD NOT mapped process to the shared memory\n");
                 sem_post(&mutex);
 
                 return -1;
             }
         }
     }
-    //printf("ERROR, MORE THAN 10 process!\n");
 
     sem_post(&mutex);
 
@@ -189,7 +176,6 @@ void *smem_alloc(int size)
     }
     if (processMemoryPtr == NULL) //check permission
     {
-        //printf("You do not have permission to allocate memory!\n");
         sem_post(&mutex);
 
         return NULL;
@@ -235,7 +221,6 @@ int smem_close()
 
     if (sharedMemorySize < 0)
     {
-        //printf("MEM CANNOT SMEM_OPEN FAIL. Library is not initialized!\n");
         sem_post(&mutex);
 
         return -1;
@@ -259,7 +244,6 @@ int smem_close()
                 curHead += *((int *)(curHead));
                 if (prevHead != NULL)
                 {
-                    //printf("Forced deallocating to prevent memory leak...\n");
                     smem_library_free(prevHead + HEADER_SIZE);
                     prevHead = NULL;
                 }
@@ -274,18 +258,15 @@ int smem_close()
                 usedData[i] = -1;
                 processCount--;
 
-                //printf("Library successfuly UNMAPPED process\n");
                 sem_post(&mutex);
 
                 return 0;
             }
-            //printf("Library COULD NOT unmap\n");
             sem_post(&mutex);
 
             return -1;
         }
     }
-    //printf("Requesting process is not using the library, denided service!\n");
     sem_post(&mutex);
 
     return -1;
@@ -306,7 +287,6 @@ void smem_library_free(void *p)
     }
     if (processMemoryPtr == NULL) //check permission
     {
-        //printf("You do not have permission to allocate memory!\n");
 
         return;
     }
@@ -417,7 +397,6 @@ int smem_get_mem_utilization(int *totUnusedSize) // for experiment, gets total n
     }
     if (processMemoryPtr == NULL) //check permission
     {
-        //printf("You do not have permission to allocate memory!\n");
         sem_post(&mutex);
         *totUnusedSize = -1;
         return -1;

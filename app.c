@@ -19,7 +19,6 @@ int getRandomInt(int i)
 }
 
 void startExperiment(int pid){
-    //printf("%d hmmm\n", pid);
     int failCount = 0;
     int unusedBlockCount = 0;
     int unusedSizeLength = 0;
@@ -36,7 +35,6 @@ void startExperiment(int pid){
         {
 
             int index = getRandomInt(i);
-            //printf("%d\n", index);
             count[index]++;
             if (pointers[index] == NULL)
             {
@@ -70,7 +68,6 @@ int main()
     for(int i = 0 ; i < 10 ; i++){
         n = fork();
         if(n == 0){ // child
-            //printf("%d\n", i);
             startExperiment(i);
             exit(0);
         }
